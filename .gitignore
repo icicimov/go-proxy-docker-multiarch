@@ -1,0 +1,4 @@
+build/
+*.retry
+*.backup
+*.bkp

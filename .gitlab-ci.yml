@@ -1,0 +1,84 @@
+variables:
+  GIT_SSL_NO_VERIFY: "true"
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://localhost:2375
+  GITLAB_REGISTRY: "gitlab.domain.tld"
+  DOCKER_IMAGE: "igoratencompass/docker-dind-make:latest"
+  DOCKER_DIND_IMAGE: "igoratencompass/docker-dind:18.09.7"
+  PACKAGE_PATH: /go/src/${GITLAB_REGISTRY}/projects/go-proxy-multiarch
+
+image: golang:1.10-alpine3.7
+
+stages:
+  - dep
+  - test
+  - build
+
+.job_template: &job_template
+  only:
+    refs:
+      - master
+      - pipelines
+      - triggers
+      - web
+    changes:
+      - "Dockerfile"
+      - "*.go"
+    variables:
+      - $CI_PIPELINE_SOURCE == "pipeline"
+      - $CI_COMMIT_REF_NAME == "master"
+  except:
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /skip-pipeline/
+
+.anchors:
+  - &inject-gopath
+      mkdir -p $(dirname ${PACKAGE_PATH})
+      && ln -s ${CI_PROJECT_DIR} ${PACKAGE_PATH}
+      && cd ${PACKAGE_PATH}
+
+dep:
+  stage: dep
+  before_script:
+    - apk --no-cache add --update curl git
+    - curl -sSL https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-amd64 -o /go/bin/dep
+    - chmod +x /go/bin/dep
+    - *inject-gopath
+  script:
+    - dep init && dep ensure -v -vendor-only
+  artifacts:
+    name: "vendor-$CI_PIPELINE_ID"
+    paths:
+      - vendor/
+    expire_in: 1 hour
+  <<: *job_template
+
+test:
+  stage: test
+  dependencies:
+    - dep
+  before_script:
+    #- apk --no-cache add --update make bash gcc musl-dev libc-dev
+    - *inject-gopath
+  script:
+    #- go test -v -race ./...
+    - go test -v
+  <<: *job_template
+
+build:
+  stage: build
+  dependencies:
+    - dep
+  image: $DOCKER_IMAGE
+  variables:
+    #DOCKER_CLI_EXPERIMENTAL: "enabled" # not needed, enabled in the image
+    #DOCKER_TAG: $CI_JOB_ID             # Optional: override the image tag in the Makefile (commit hash by default)
+  services:
+    - $DOCKER_DIND_IMAGE
+  before_script:
+    #- apk --no-cache add --update build-base bash
+    - docker version
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+  script:
+    - make docker
+  <<: *job_template
